@@ -77,11 +77,15 @@ const generateImage = async ({
   return await downloadImage(url);
 }
 
+const getTempFileName = (slug:string) => {
+  return `./temp/${Date.now()}${Math.random()}${slug}`;
+}
 const makeImageTileable = async (buffer: Buffer, prompt: string) => {
 
-  const tempFileName = `./temp/${Date.now()}${Math.random()}mask-image.png`;
+  const slug = 'mask-image.png'
+  const tempFileName = getTempFileName(slug);
 
-  const mask = await sharp(buffer)
+  await sharp(buffer)
   .composite([
     {input: buffer, left: -size/2, top: -size/2, blend: 'over'},
     {input: buffer, left: size/2, top: -size/2, blend: 'over'},
@@ -117,9 +121,6 @@ const createTileablePreviewPage = (fullImagePath:string) => {
   });
 }
 
-
-
-
 const createTileableImage = async ({prompt,slug}:{prompt:string,slug:string}) => {
   console.log('Generating image...')
   const image = await generateImage({
@@ -137,7 +138,64 @@ const createTileableImage = async ({prompt,slug}:{prompt:string,slug:string}) =>
 }
 
 
-await createTileableImage({
-  prompt: 'A photorealistic public swimming pool water from above',
-  slug: 'water'
-})
+// await createTileableImage({
+//   prompt: 'A photorealistic public swimming pool water from above',
+//   slug: 'water'
+// })
+
+const createEnormouseImage = async ({prompt,slug}:{prompt:string,slug:string}) => {
+
+  console.log('Generating image...')
+  const image = await generateImage({prompt});
+  saveImage(image, slug);
+
+  console.log('Creating expansion template...')
+  const tempFileName = getTempFileName(`${slug}.png`)
+  await sharp({
+    create: {
+      width: size,
+      height: size,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+  .png()
+  .composite([
+    {input: image, left: -size/2, top: 0, blend: 'over'},
+  ])
+  .toFile(tempFileName);
+
+
+  console.log('Expanding image...')
+  const result = await openai.createImageEdit(
+    // @ts-expect-error
+    createReadStream(tempFileName),
+    createReadStream(tempFileName),
+    prompt
+  )
+  const expandedImage = await downloadImage(result.data.data[0].url);
+  saveImage(expandedImage, `${slug}-expanded`);
+
+  await sharp({
+    create: {
+      width: size * 1.5,
+      height: size,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+  .png()
+  .composite([
+    {input: image, left: 0, top: 0, blend: 'over'},
+    {input: expandedImage, left: size/2, top: 0, blend: 'over'},
+  ])
+  .toFile(getTempFileName(`${slug}-expanded-merged.png`));
+
+}
+
+
+await createEnormouseImage({
+  prompt: 'A photorealistic top down image of the surface of the moon',
+  slug: 'moon1'
+});
+
