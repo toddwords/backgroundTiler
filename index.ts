@@ -31,6 +31,8 @@ const downloadImage = async (url: string) => {
   return Buffer.from( await blob.arrayBuffer() )
 }
 
+// const blankImageTemplate =
+
 
 const generateMaskShape = async () => {
   // const svg = `<svg width="${size}" height="${size}" version="1.1" xmlns="http://www.w3.org/2000/svg"> +
@@ -143,59 +145,82 @@ const createTileableImage = async ({prompt,slug}:{prompt:string,slug:string}) =>
 //   slug: 'water'
 // })
 
-const createEnormouseImage = async ({prompt,slug}:{prompt:string,slug:string}) => {
+const expandImage = async ({
+  image,
+  prompt,
+  slug,
+  numPanels
+}:{
+  image:Buffer,
+  prompt:string,
+  slug:string,
+  numPanels:number
+}) => {
 
-  console.log('Generating image...')
-  const image = await generateImage({prompt});
-  saveImage(image, slug);
 
-  console.log('Creating expansion template...')
-  const tempFileName = getTempFileName(`${slug}.png`)
+  const images = [
+    image
+  ]
+
+  for(let i = 0; i < numPanels; i++){
+    const imageToSample = images[i]
+
+    console.log(i,'Creating expansion template to feed into DallE...')
+    const tempFileName = getTempFileName(`${slug}-expansion-${i}.png`)
+
+    await sharp({
+      create: {
+        width: size,
+        height: size,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+    .png()
+    .composite([
+      {input: imageToSample, left: -size/2, top: 0, blend: 'over'},
+    ])
+    .toFile(tempFileName);
+
+    console.log('Expanding image...')
+    const result = await openai.createImageEdit(
+      // @ts-expect-error
+      createReadStream(tempFileName),
+      createReadStream(tempFileName),
+      prompt
+    )
+    const expandedImage = await downloadImage(result.data.data[0].url);
+    saveImage(expandedImage, `${slug}-expansion-${i}`)
+    images.push(expandedImage)
+  }
+
   await sharp({
     create: {
-      width: size,
+      width: size  * (1+0.5*numPanels),
       height: size,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     }
   })
   .png()
-  .composite([
-    {input: image, left: -size/2, top: 0, blend: 'over'},
-  ])
-  .toFile(tempFileName);
-
-
-  console.log('Expanding image...')
-  const result = await openai.createImageEdit(
-    // @ts-expect-error
-    createReadStream(tempFileName),
-    createReadStream(tempFileName),
-    prompt
+  .composite(
+    images.map((slice,i) => ({
+      input: slice,
+      left: i*size/2,
+      top: 0,
+      blend: 'over'
+    }))
   )
-  const expandedImage = await downloadImage(result.data.data[0].url);
-  saveImage(expandedImage, `${slug}-expanded`);
-
-  await sharp({
-    create: {
-      width: size * 1.5,
-      height: size,
-      channels: 4,
-      background: { r: 0, g: 0, b: 0, alpha: 0 }
-    }
-  })
-  .png()
-  .composite([
-    {input: image, left: 0, top: 0, blend: 'over'},
-    {input: expandedImage, left: size/2, top: 0, blend: 'over'},
-  ])
   .toFile(getTempFileName(`${slug}-expanded-merged.png`));
-
 }
 
 
-await createEnormouseImage({
+
+const seedImage = await loadImage('./assets/moonsurface.png');
+await expandImage({
+  image: seedImage,
   prompt: 'A photorealistic top down image of the surface of the moon',
-  slug: 'moon1'
+  slug: 'moon1',
+  numPanels: 3,
 });
 
