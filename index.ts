@@ -3,7 +3,7 @@ import {writeFileSync, createReadStream, createWriteStream } from 'fs';
 import express from 'express'
 import * as dotenv from 'dotenv';
 import fetch from 'node-fetch';
-import sharp from 'sharp';
+import sharp, { Blend } from 'sharp';
 dotenv.config()
 
 const configuration = new Configuration({
@@ -157,7 +157,6 @@ const expandImage = async ({
   numPanels:number
 }) => {
 
-
   const images = [
     image
   ]
@@ -166,7 +165,23 @@ const expandImage = async ({
     const imageToSample = images[i]
 
     console.log(i,'Creating expansion template to feed into DallE...')
-    const tempFileName = getTempFileName(`${slug}-expansion-${i}.png`)
+    const tempSrcFile = getTempFileName(`${slug}-expansion-${i}-src.png`)
+    const tempMaskFile = getTempFileName(`${slug}-expansion-${i}-mask.png`)
+
+    await sharp({
+      create: {
+        width: size,
+        height: size,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+    .png()
+    .composite([
+      {input: imageToSample, left: -size/2, top: 0, blend: 'over'},
+      {input: imageToSample, left: size/2, top: 0, blend: 'over'},
+    ])
+    .toFile(tempSrcFile);
 
     await sharp({
       create: {
@@ -180,13 +195,13 @@ const expandImage = async ({
     .composite([
       {input: imageToSample, left: -size/2, top: 0, blend: 'over'},
     ])
-    .toFile(tempFileName);
+    .toFile(tempMaskFile);
 
     console.log('Expanding image...')
     const result = await openai.createImageEdit(
       // @ts-expect-error
-      createReadStream(tempFileName),
-      createReadStream(tempFileName),
+      createReadStream(tempSrcFile),
+      createReadStream(tempMaskFile),
       prompt
     )
     const expandedImage = await downloadImage(result.data.data[0].url);
@@ -215,12 +230,103 @@ const expandImage = async ({
 }
 
 
+const stitchImagesTogether = async ({
+  seedImages,
+  prompt,
+  slug,
+}:{
+  seedImages:Buffer[],
+  prompt:string,
+  slug:string,
+}) => {
 
-const seedImage = await loadImage('./assets/moonsurface.png');
-await expandImage({
-  image: seedImage,
-  prompt: 'A photorealistic top down image of the surface of the moon',
-  slug: 'moon1',
-  numPanels: 3,
-});
+  const nSeeds = seedImages.length
+  const stitchImages = []
+  for(let i = 0; i < nSeeds-1; i++){
 
+    console.log(i,'Creating template to feed into DallE...')
+    const tempMaskFile = getTempFileName(`${slug}-expansion-${i}-mask.png`)
+
+    await sharp({
+      create: {
+        width: size,
+        height: size,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+    .png()
+    .composite([
+      {input: seedImages[i], left: -size*0.75, top: 0, blend: 'over'},
+      {input: seedImages[i+1], left: size*0.75, top: 0, blend: 'over'},
+    ])
+    .toFile(tempMaskFile);
+
+    console.log('Expanding image...')
+    const result = await openai.createImageEdit(
+      // @ts-expect-error
+      createReadStream(tempMaskFile),
+      createReadStream(tempMaskFile),
+      prompt
+    )
+    const expandedImage = await downloadImage(result.data.data[0].url);
+    saveImage(expandedImage, `${slug}-expansion-${i}`)
+    stitchImages.push(expandedImage)
+  }
+
+  await sharp({
+    create: {
+      width: size * nSeeds + size/2 * (nSeeds-1),
+      height: size,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+  .png()
+  .composite([
+    ...seedImages.map((seed,i) => ({
+      input: seed,
+      left: i*size*1.5,
+      top: 0,
+      blend: 'over' as Blend
+    })),
+    ...stitchImages.map((stitch,i) => ({
+      input: stitch,
+      left: i*size*1.5 + size*.75,
+      top: 0,
+      blend: 'over' as Blend
+    }))
+  ])
+  .toFile(getTempFileName(`${slug}-expanded-merged.png`));
+}
+
+
+const generateGiantStitchedImage = async ({
+  prompt,
+  slug,
+  nSeeds,
+}:{
+  prompt:string,
+  slug:string,
+  nSeeds:number,
+}) => {
+  const seeds = []
+
+  for(let i = 0; i < nSeeds; i++){
+    const image = await generateImage({prompt})
+    await saveImage(image, slug+i)
+    seeds.push(image)
+  }
+
+  await stitchImagesTogether({
+    seedImages: seeds,
+    prompt,
+    slug,
+  })
+}
+
+generateGiantStitchedImage({
+  prompt: 'photorealistic top down view of a chrome metallic futuristic factory',
+  slug: 'chrome',
+  nSeeds: 6
+})
